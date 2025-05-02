@@ -7,7 +7,7 @@ const cors = require("cors");
 const app = express();
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: "https://streg-frontend.vercel.app",
     credentials: true,
   })
 );
@@ -15,7 +15,7 @@ app.use(
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000",
+    origin: "https://streg-frontend.vercel.app",
     methods: ["GET", "POST"],
     credentials: true,
   },
