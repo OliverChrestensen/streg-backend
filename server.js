@@ -44,14 +44,15 @@ function generateLobbyCode() {
   return code;
 }
 
-function createLobby() {
+function createLobby(boardSize = 20) {
   const code = generateLobbyCode();
   lobbies.set(code, {
     players: new Map(),
-    numbers: Array.from({ length: 20 }, (_, i) => i + 1),
+    numbers: Array.from({ length: boardSize }, (_, i) => i + 1),
     currentTurn: null,
     gameStarted: false,
     winners: [],
+    boardSize: boardSize
   });
   return code;
 }
@@ -59,8 +60,8 @@ function createLobby() {
 io.on("connection", (socket) => {
   socket.lobbyCode = null;
 
-  socket.on("createLobby", () => {
-    const code = createLobby();
+  socket.on("createLobby", ({ boardSize }) => {
+    const code = createLobby(boardSize);
     console.log(`Lobby created with code: ${code} for socket: ${socket.id}`);
     socket.emit("lobbyCreated", code);
   });
