@@ -7,7 +7,7 @@ const cors = require("cors");
 const app = express();
 app.use(
   cors({
-    origin: "https://streg-frontend.vercel.app",
+    origin: ["https://streg-frontend.vercel.app", "http://localhost:3000"],
     credentials: true,
   })
 );
@@ -15,7 +15,7 @@ app.use(
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "https://streg-frontend.vercel.app",
+    origin: ["https://streg-frontend.vercel.app", "http://localhost:3000"],
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -58,9 +58,11 @@ function createLobby(boardSize = 20) {
 }
 
 io.on("connection", (socket) => {
+  console.log("New client connected:", socket.id);
   socket.lobbyCode = null;
 
   socket.on("createLobby", ({ boardSize }) => {
+    console.log("Creating lobby with board size:", boardSize);
     const code = createLobby(boardSize);
     console.log(`Lobby created with code: ${code} for socket: ${socket.id}`);
     socket.emit("lobbyCreated", code);
@@ -84,6 +86,7 @@ io.on("connection", (socket) => {
     });
     socket.lobbyCode = code;
     io.to(code).emit("playerList", Array.from(lobby.players.values()));
+    socket.emit("lobbyJoined", { boardSize: lobby.boardSize });
     socket.join(code);
   });
 
@@ -192,6 +195,21 @@ io.on("connection", (socket) => {
       socket.emit("error", "At least 2 players required to start the game.");
       return;
     }
+
+    // Check for duplicate numbers
+    const selectedNumbers = Array.from(lobby.players.values())
+      .map(player => player.selectedNumber)
+      .filter(number => number !== null);
+    
+    const uniqueNumbers = new Set(selectedNumbers);
+    if (uniqueNumbers.size !== selectedNumbers.length) {
+      // Reset all players' selectedNumber to null
+      lobby.players.forEach(player => { player.selectedNumber = null; });
+      io.to(code).emit("playerList", Array.from(lobby.players.values()));
+      io.to(code).emit("resetNumbers");
+      return;
+    }
+
     lobby.gameStarted = true;
     lobby.currentTurn = firstPlayerId;
     // Emit gameStarted to all in the lobby
