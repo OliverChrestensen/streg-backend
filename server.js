@@ -74,7 +74,7 @@ io.on("connection", (socket) => {
       socket.emit("error", "Lobby not found");
       return;
     }
-    if (lobby.players.size >= 4) {
+    if (lobby.players.size >= 12) {
       socket.emit("error", "Game is full");
       return;
     }
@@ -119,30 +119,67 @@ io.on("connection", (socket) => {
     const index = lobby.numbers.indexOf(number);
     if (index === -1) return;
     lobby.numbers.splice(index, 1);
+    // Collect all players to be eliminated this round
+    const toEliminate = [];
     lobby.players.forEach((player, id) => {
       if (player.selectedNumber === number && !player.isEliminated) {
-        player.isEliminated = true;
-        const eliminatedPlayers = Array.from(lobby.players.values()).filter(
-          (p) => p.isEliminated
-        ).length;
-        player.placement = eliminatedPlayers;
-        io.to(code).emit("playerEliminated", {
-          playerName: player.name,
-          number: player.selectedNumber,
-          placement: player.placement,
-          totalPlayers: lobby.players.size,
-        });
-        io.to(code).emit("playerList", Array.from(lobby.players.values()));
-        io.to(id).emit("youWon", {
-          placement: player.placement,
-          totalPlayers: lobby.players.size,
-          number: player.selectedNumber,
-        });
+        toEliminate.push({ player, id });
       }
     });
+    // Count how many are already eliminated before this round
+    const alreadyEliminated = Array.from(lobby.players.values()).filter(
+      (p) => p.isEliminated
+    ).length;
+    // Placement for this round is highest available
+    const placement = alreadyEliminated + 1;
+    // Eliminate them and assign placement
+    toEliminate.forEach(({ player, id }) => {
+      player.isEliminated = true;
+      player.placement = placement;
+      io.to(code).emit("playerEliminated", {
+        playerName: player.name,
+        number: player.selectedNumber,
+        placement: player.placement,
+        totalPlayers: lobby.players.size,
+      });
+      io.to(code).emit("playerList", Array.from(lobby.players.values()));
+      io.to(id).emit("youWon", {
+        placement: player.placement,
+        totalPlayers: lobby.players.size,
+        number: player.selectedNumber,
+      });
+    });
+    // Now calculate remaining players
     const remainingPlayers = Array.from(lobby.players.values()).filter(
       (p) => !p.isEliminated
     );
+    // New rule: if all remaining players have the same selectedNumber, end the game and assign them all last place
+    if (
+      remainingPlayers.length > 1 &&
+      remainingPlayers.every(p => p.selectedNumber === remainingPlayers[0].selectedNumber)
+    ) {
+      const lastPlace = lobby.players.size;
+      remainingPlayers.forEach(p => {
+        p.placement = lastPlace;
+        p.isEliminated = true;
+      });
+      io.to(code).emit("gameOver", {
+        placements: Array.from(lobby.players.values())
+          .sort((a, b) => (a.placement || 999) - (b.placement || 999))
+          .map((p) => ({
+            name: p.name,
+            number: p.selectedNumber,
+            placement: p.placement,
+          })),
+      });
+      lobby.gameStarted = false;
+      lobby.numbers = Array.from({ length: 20 }, (_, i) => i + 1);
+      lobby.currentTurn = null;
+      lobby.players.clear();
+      lobby.winners = [];
+      return;
+    }
+    // If only one player is left, they are the loser and get last place
     if (remainingPlayers.length === 1) {
       const loser = remainingPlayers[0];
       loser.placement = lobby.players.size;
@@ -200,10 +237,11 @@ io.on("connection", (socket) => {
     const selectedNumbers = Array.from(lobby.players.values())
       .map(player => player.selectedNumber)
       .filter(number => number !== null);
-    
-    const uniqueNumbers = new Set(selectedNumbers);
-    if (uniqueNumbers.size !== selectedNumbers.length) {
-      // Reset all players' selectedNumber to null
+    // Only reset if all players have picked and all numbers are the same
+    if (
+      selectedNumbers.length === lobby.players.size &&
+      selectedNumbers.every(n => n === selectedNumbers[0])
+    ) {
       lobby.players.forEach(player => { player.selectedNumber = null; });
       io.to(code).emit("playerList", Array.from(lobby.players.values()));
       io.to(code).emit("resetNumbers");
