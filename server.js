@@ -52,9 +52,14 @@ function createLobby(boardSize = 20) {
     currentTurn: null,
     gameStarted: false,
     winners: [],
-    boardSize: boardSize
+    boardSize: boardSize,
+    nextRoundPlayers: new Map(), // For replay logic
   });
   return code;
+}
+
+function getPlayersWithIds(playersMap) {
+  return Array.from(playersMap.entries()).map(([id, player]) => ({ ...player, id }));
 }
 
 io.on("connection", (socket) => {
@@ -84,8 +89,10 @@ io.on("connection", (socket) => {
       isEliminated: false,
       placement: null,
     });
+    socket.playerName = playerName;
     socket.lobbyCode = code;
-    io.to(code).emit("playerList", Array.from(lobby.players.values()));
+    io.to(code).emit("playerList", getPlayersWithIds(lobby.players));
+    socket.emit("playerList", getPlayersWithIds(lobby.players));
     socket.emit("lobbyJoined", { boardSize: lobby.boardSize });
     socket.join(code);
   });
@@ -103,7 +110,7 @@ io.on("connection", (socket) => {
     let player = lobby.players.get(socket.id);
     if (!player) return;
     player.selectedNumber = number;
-    io.to(code).emit("playerList", Array.from(lobby.players.values()));
+    io.to(code).emit("playerList", getPlayersWithIds(lobby.players));
   });
 
   socket.on("eliminateNumber", (number) => {
@@ -142,7 +149,7 @@ io.on("connection", (socket) => {
         placement: player.placement,
         totalPlayers: lobby.players.size,
       });
-      io.to(code).emit("playerList", Array.from(lobby.players.values()));
+      io.to(code).emit("playerList", getPlayersWithIds(lobby.players));
       io.to(id).emit("youWon", {
         placement: player.placement,
         totalPlayers: lobby.players.size,
@@ -173,7 +180,7 @@ io.on("connection", (socket) => {
           })),
       });
       lobby.gameStarted = false;
-      lobby.numbers = Array.from({ length: 20 }, (_, i) => i + 1);
+      lobby.numbers = Array.from({ length: lobby.boardSize }, (_, i) => i + 1);
       lobby.currentTurn = null;
       lobby.players.clear();
       lobby.winners = [];
@@ -198,7 +205,7 @@ io.on("connection", (socket) => {
           })),
       });
       lobby.gameStarted = false;
-      lobby.numbers = Array.from({ length: 20 }, (_, i) => i + 1);
+      lobby.numbers = Array.from({ length: lobby.boardSize }, (_, i) => i + 1);
       lobby.currentTurn = null;
       lobby.players.clear();
       lobby.winners = [];
@@ -243,13 +250,16 @@ io.on("connection", (socket) => {
       selectedNumbers.every(n => n === selectedNumbers[0])
     ) {
       lobby.players.forEach(player => { player.selectedNumber = null; });
-      io.to(code).emit("playerList", Array.from(lobby.players.values()));
+      io.to(code).emit("playerList", getPlayersWithIds(lobby.players));
       io.to(code).emit("resetNumbers");
       return;
     }
 
     lobby.gameStarted = true;
-    lobby.currentTurn = firstPlayerId;
+    // Randomly select a starting player
+    const playerIds = Array.from(lobby.players.keys());
+    const randomIndex = Math.floor(Math.random() * playerIds.length);
+    lobby.currentTurn = playerIds[randomIndex];
     // Emit gameStarted to all in the lobby
     io.to(code).emit("gameStarted", {
       currentTurn: lobby.currentTurn,
@@ -258,14 +268,77 @@ io.on("connection", (socket) => {
     });
   });
 
+  socket.on("replayGame", () => {
+    const code = socket.lobbyCode;
+    if (!code) return;
+    const lobby = lobbies.get(code);
+    if (!lobby) return;
+    // Reset lobby state but keep players and code
+    lobby.numbers = Array.from({ length: lobby.boardSize }, (_, i) => i + 1);
+    lobby.currentTurn = null;
+    lobby.gameStarted = false;
+    lobby.winners = [];
+    // Reset player states
+    lobby.players.forEach(player => {
+      player.selectedNumber = null;
+      player.isEliminated = false;
+      player.placement = null;
+    });
+    io.to(code).emit("lobbyReset", {
+      boardSize: lobby.boardSize,
+      players: getPlayersWithIds(lobby.players),
+      numbers: lobby.numbers,
+    });
+    io.to(code).emit("playerList", getPlayersWithIds(lobby.players));
+  });
+
+  socket.on("playerReadyForReplay", () => {
+    const code = socket.lobbyCode;
+    if (!code) return;
+    const lobby = lobbies.get(code);
+    if (!lobby) return;
+    // Always reset player state when rejoining for a new round, keep name from socket
+    const name = socket.playerName || `Player${lobby.players.size + 1}`;
+    lobby.players.set(socket.id, {
+      name,
+      selectedNumber: null,
+      isEliminated: false,
+      placement: null,
+    });
+    // Broadcast updated player list
+    io.to(code).emit("playerList", getPlayersWithIds(lobby.players));
+    // Send lobbyReset to this player so they see the lobby/number selection
+    socket.emit("lobbyReset", {
+      boardSize: lobby.boardSize,
+      players: getPlayersWithIds(lobby.players),
+      numbers: Array.from({ length: lobby.boardSize }, (_, i) => i + 1),
+    });
+  });
+
+  socket.on("leaveLobby", () => {
+    const code = socket.lobbyCode;
+    if (!code) return;
+    const lobby = lobbies.get(code);
+    if (!lobby) return;
+    lobby.players.delete(socket.id);
+    lobby.nextRoundPlayers?.delete(socket.id);
+    socket.leave(code);
+    socket.lobbyCode = null;
+    io.to(code).emit("playerList", getPlayersWithIds(lobby.players));
+    if (lobby.players.size === 0 && (!lobby.nextRoundPlayers || lobby.nextRoundPlayers.size === 0)) {
+      lobbies.delete(code);
+    }
+  });
+
   socket.on("disconnect", () => {
     const code = socket.lobbyCode;
     if (code) {
       const lobby = lobbies.get(code);
       if (lobby) {
         lobby.players.delete(socket.id);
-        io.to(code).emit("playerList", Array.from(lobby.players.values()));
-        if (lobby.players.size === 0) {
+        lobby.nextRoundPlayers?.delete(socket.id);
+        io.to(code).emit("playerList", getPlayersWithIds(lobby.players));
+        if (lobby.players.size === 0 && (!lobby.nextRoundPlayers || lobby.nextRoundPlayers.size === 0)) {
           lobbies.delete(code);
         }
       }
